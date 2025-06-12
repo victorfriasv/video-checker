@@ -1,0 +1,46 @@
+name: Build Windows Executable
+
+# Esto hace que el workflow se ejecute cada vez que subes cambios (push)
+# o puedes iniciarlo manualmente desde la pestaña Actions (workflow_dispatch)
+on: [push, workflow_dispatch]
+
+jobs:
+  build-windows:
+    # Usamos un servidor de Windows para compilar, es obligatorio para un .exe
+    runs-on: windows-latest
+
+    steps:
+      # 1. Clona tu repositorio en el servidor de compilación
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Configura Python en el servidor
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 3. Instala PyInstaller, la herramienta para crear el .exe
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      # 4. Descarga los binarios de FFmpeg (versión "essentials")
+      - name: Download FFmpeg
+        run: |
+          curl -L -o ffmpeg.zip https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+          7z x ffmpeg.zip -o.
+          
+      # 5. Ejecuta PyInstaller para crear el ejecutable
+      - name: Build Executable with PyInstaller
+        run: |
+          pyinstaller --onefile --name video_checker `
+          --add-binary "ffmpeg-*-essentials_build/bin/ffmpeg.exe;." `
+          --add-binary "ffmpeg-*-essentials_build/bin/ffprobe.exe;." `
+          video_checker.py
+
+      # 6. Sube el .exe resultante como un "artefacto" para que puedas descargarlo
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-checker-windows
+          path: dist/video_checker.exe
