@@ -2,8 +2,8 @@
 """
 Video Quality Checker con GUI (video_checker_gui.py)
 
-VERSIÓN 3.0 - COMPLETA Y FUNCIONAL
-Lógica de análisis por canal y detección de picos con NumPy.
+VERSIÓN 3.1 - CORREGIDA
+Soluciona el error de lectura de metadatos usando JSON.
 """
 import subprocess
 import re
@@ -14,14 +14,15 @@ from tkinter import filedialog, scrolledtext, messagebox
 import threading
 import queue
 import numpy as np
+import json # <-- Nueva importación
 
 # --- Constantes de Umbrales ---
 MUTE_THRESHOLD_DB = -50
 MUTE_MIN_DURATION_S = 1.0
 SHORT_SHOT_MIN_FRAMES = 5
 BLACK_FRAME_THRESHOLD = 0.98
-PEAK_DBFS_THRESHOLD = -1.5  # Umbral en dBFS para considerar un "pico"
-PEAK_MAX_DURATION_S = 0.2    # Duración máxima para que un pico sea "corto"
+PEAK_DBFS_THRESHOLD = -1.5
+PEAK_MAX_DURATION_S = 0.2
 
 # --- Clase de Análisis ---
 class VideoAnalyzer:
@@ -29,15 +30,12 @@ class VideoAnalyzer:
         self.file_path = file_path
         self.num_channels = int(num_channels)
         self.queue = text_widget_queue
-        # Convertir umbral de pico de dBFS a amplitud lineal para NumPy
         self.peak_amplitude_threshold = 10 ** (PEAK_DBFS_THRESHOLD / 20)
 
     def log(self, message):
-        """ Envía mensajes a la GUI de forma segura desde el hilo. """
         self.queue.put(message)
 
     def get_resource_path(self, relative_path):
-        """ Obtiene la ruta absoluta al recurso, funciona para dev y para PyInstaller. """
         try:
             base_path = sys._MEIPASS
         except Exception:
@@ -45,15 +43,11 @@ class VideoAnalyzer:
         return os.path.join(base_path, relative_path)
 
     def run_analysis(self):
-        """ Orquesta toda la secuencia de análisis. """
         self.log(f"🚀 Iniciando análisis del archivo: {os.path.basename(self.file_path)}\n" + "-"*50)
-        
         ffmpeg_path = self.get_resource_path("ffmpeg.exe")
         ffprobe_path = self.get_resource_path("ffprobe.exe")
-        
         if not os.path.exists(ffmpeg_path) or not os.path.exists(ffprobe_path):
             self.log("❌ ERROR: No se encontraron 'ffmpeg.exe' y 'ffprobe.exe'.")
-            self.log("Asegúrate de que estén en la misma carpeta que el programa.")
             return
 
         metadata = self._get_video_metadata(ffprobe_path)
@@ -68,31 +62,63 @@ class VideoAnalyzer:
         self.log("\n" + "-"*50 + "\n✅ Análisis completado.")
 
     def _run_command(self, command, capture_stdout=True):
-        """ Ejecuta un comando de FFmpeg/FFprobe como un subproceso. """
         return subprocess.Popen(
             command, 
             stdout=subprocess.PIPE if capture_stdout else subprocess.DEVNULL, 
             stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW
         )
-
+    
+    # --- MÉTODO CORREGIDO ---
     def _get_video_metadata(self, ffprobe_path):
-        self.log("\nObteniendo metadatos del vídeo...")
-        command = [ffprobe_path, "-v", "error", "-select_streams", "a:0,v:0", "-show_entries", "stream=r_frame_rate,duration,sample_rate,channels", "-of", "default=noprint_wrappers=1:nokey=1", self.file_path]
+        self.log("\nObteniendo metadatos del vídeo (formato JSON)...")
+        command = [
+            ffprobe_path,
+            "-v", "error",
+            "-select_streams", "v:0,a:0",
+            "-show_entries", "stream=codec_type,r_frame_rate,duration,sample_rate,channels",
+            "-of", "json",
+            self.file_path
+        ]
         proc = self._run_command(command)
         stdout, stderr = proc.communicate()
-        stdout = stdout.decode('utf-8', errors='ignore')
+        stdout_str = stdout.decode('utf-8', errors='ignore')
+
         try:
-            lines = stdout.strip().split('\n')
-            data = {'fps': 25, 'duration': 0, 'sample_rate': 48000, 'channels': self.num_channels}
-            data['sample_rate'] = int(lines[0])
-            data['channels'] = int(lines[1])
-            data['fps'] = eval(lines[2])
-            data['duration'] = float(lines[3])
-            self.log(f"    Duración: {data['duration']:.2f}s, Tasa de frames: {data['fps']:.2f} fps, Audio: {data['sample_rate']} Hz")
-            return data
+            ffprobe_data = json.loads(stdout_str)
+            metadata = {}
+
+            # Valores por defecto por si algún stream no se encuentra
+            metadata['fps'] = 25.0
+            metadata['duration'] = 0.0
+            metadata['sample_rate'] = 48000
+            metadata['channels'] = self.num_channels
+
+            for stream in ffprobe_data.get("streams", []):
+                if stream.get("codec_type") == "video":
+                    if "r_frame_rate" in stream and stream["r_frame_rate"] != "0/0":
+                        num, den = map(int, stream["r_frame_rate"].split('/'))
+                        metadata['fps'] = num / den if den != 0 else 25.0
+                    if "duration" in stream:
+                        metadata['duration'] = float(stream["duration"])
+                
+                elif stream.get("codec_type") == "audio":
+                    if "sample_rate" in stream:
+                        metadata['sample_rate'] = int(stream["sample_rate"])
+                    if "channels" in stream:
+                        metadata['channels'] = int(stream["channels"])
+                        # Actualizamos el número de canales por si el usuario puso uno incorrecto
+                        self.num_channels = int(stream["channels"])
+
+            if metadata['duration'] == 0.0:
+                 self.log("    ⚠️ No se pudo leer la duración del stream de vídeo.")
+
+            self.log(f"    Metadatos leídos: Duración: {metadata['duration']:.2f}s, FPS: {metadata['fps']:.2f}, Audio: {metadata['sample_rate']} Hz, Canales: {self.num_channels}")
+            return metadata
+
         except Exception as e:
-            self.log(f"🚨 Error al obtener metadatos: {e}\nSalida de FFprobe:\n{stdout}")
+            self.log(f"🚨 Error fatal al procesar metadatos JSON: {e}")
+            self.log(f"   Salida de FFprobe que causó el error:\n{stdout_str}")
             return None
 
     def _find_mute_segments_per_channel(self, ffmpeg_path):
@@ -124,8 +150,8 @@ class VideoAnalyzer:
 
     def _find_short_shots(self, ffmpeg_path, metadata):
         self.log("\n[2/4] 🎬 Comprobando planos cortos...")
-        if not metadata or metadata.get("fps") == 0:
-            self.log("    ❌ No se pudo determinar la tasa de frames (fps). Saltando esta comprobación.")
+        if not metadata or metadata.get("fps") == 0 or metadata.get("duration") == 0:
+            self.log("    ❌ No hay metadatos de vídeo suficientes. Saltando esta comprobación.")
             return
 
         fps = metadata["fps"]
@@ -169,21 +195,28 @@ class VideoAnalyzer:
         command = [ffmpeg_path, "-i", self.file_path, "-f", "f32le", "-acodec", "pcm_f32le", "-ar", str(sample_rate), "-"]
         proc = self._run_command(command)
 
-        audio_data_raw = proc.stdout.read()
-        proc.wait()
-
+        audio_data_raw, _ = proc.communicate()
+        
         if not audio_data_raw:
             self.log("    ❌ No se pudo decodificar el audio.")
             return
 
         audio_data = np.frombuffer(audio_data_raw, dtype=np.float32)
-        audio_data = audio_data.reshape(-1, self.num_channels)
+        
+        # Comprobar si el número de canales de los datos coincide con lo esperado
+        expected_samples_x_channels = audio_data.size
+        actual_channels = self.num_channels
+        if (expected_samples_x_channels % actual_channels) != 0:
+            self.log(f"    ⚠️ Aviso: El número de canales ({actual_channels}) no parece coincidir con los datos de audio. Se omite el análisis de picos.")
+            return
+            
+        audio_data = audio_data.reshape(-1, actual_channels)
         num_samples = audio_data.shape[0]
         found_any_peak = False
 
-        for i in range(self.num_channels):
+        for i in range(actual_channels):
             channel_num = i + 1
-            self.log(f"    Analizando picos en Canal {channel_num}/{self.num_channels}...")
+            self.log(f"    Analizando picos en Canal {channel_num}/{actual_channels}...")
             channel_data = audio_data[:, i]
             
             is_peak = np.abs(channel_data) > self.peak_amplitude_threshold
@@ -233,7 +266,6 @@ class VideoAnalyzer:
             self.log("    ✅ No se encontraron frames negros.")
 
 # --- Clase de la Interfaz Gráfica (GUI) ---
-
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -307,7 +339,8 @@ class App(tk.Tk):
         
         if hasattr(self, 'analysis_thread') and not self.analysis_thread.is_alive() and self.analyze_button['state'] == 'disabled':
             self.analyze_button.config(state="normal")
-            if "Análisis completado" in self.output_text.get(1.0, tk.END):
+            last_line = self.output_text.get("end-2l", "end-1c")
+            if "Análisis completado" in last_line:
                 self.status_var.set("Análisis completado con éxito.")
             else:
                  self.status_var.set("Análisis finalizado con errores.")
