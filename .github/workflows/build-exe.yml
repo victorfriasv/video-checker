@@ -1,37 +1,48 @@
 name: Build Windows GUI Executable
 
-on: [push, workflow_dispatch]
+on:
+  push:
+    branches: [ main ] # O la rama que uses
+  workflow_dispatch:
 
 jobs:
   build-windows:
     runs-on: windows-latest
 
     steps:
-      # Pasos 1, 2, 3, 4 y 5 son idénticos a la versión anterior
-      # (Checkout, Set up Python, Install PyInstaller, Download FFmpeg, Rename directory)
+      # 1. Descarga el código del repositorio
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # 2. Configura el entorno de Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install PyInstaller
-        run: pip install pyinstaller
+
+      # 3. Instala las dependencias: PyInstaller y NumPy
+      - name: Install Dependencies
+        run: pip install pyinstaller numpy
+
+      # 4. Descarga y extrae FFmpeg
       - name: Download and Extract FFmpeg
         run: |
           curl -L -o ffmpeg.zip https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
           7z x ffmpeg.zip
+          
+      # 5. Renombra la carpeta de FFmpeg para tener una ruta predecible
       - name: Rename FFmpeg directory
         run: |
           $ffmpeg_dir = Get-ChildItem -Path . -Directory -Filter "ffmpeg-*-essentials_build" | Select-Object -First 1
           if ($ffmpeg_dir) {
             Rename-Item -Path $ffmpeg_dir.FullName -NewName "ffmpeg_build"
+            Write-Host "Renamed directory to ffmpeg_build"
           } else {
             Write-Host "Error: FFmpeg directory not found!"
             exit 1
           }
           
-      # 6. (MODIFICADO) Ejecuta PyInstaller para crear el .exe CON GUI
+      # 6. Ejecuta PyInstaller para crear el .exe con GUI
       - name: Build GUI Executable with PyInstaller
         run: |
           pyinstaller --onefile --noconsole --name video_checker_gui `
@@ -39,7 +50,7 @@ jobs:
           --add-binary "ffmpeg_build/bin/ffprobe.exe;." `
           video_checker_gui.py
 
-      # 7. (MODIFICADO) Sube el .exe resultante
+      # 7. Sube el .exe resultante como un "artefacto" para descargarlo
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
