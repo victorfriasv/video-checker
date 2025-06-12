@@ -7,11 +7,11 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # 1. Clona tu repositorio en el servidor de compilación
+      # 1. Clona tu repositorio
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Configura Python en el servidor
+      # 2. Configura Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -21,13 +21,13 @@ jobs:
       - name: Install PyInstaller
         run: pip install pyinstaller
 
-      # 4. Descarga y extrae los binarios de FFmpeg
+      # 4. (MODIFICADO) Descarga y extrae FFmpeg
       - name: Download and Extract FFmpeg
         run: |
           curl -L -o ffmpeg.zip https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
-          7z x ffmpeg.zip -o.
-          
-      # 5. (NUEVO PASO) Renombra la carpeta de FFmpeg para tener una ruta predecible
+          7z x ffmpeg.zip
+
+      # 5. Renombra la carpeta de FFmpeg para tener una ruta predecible
       - name: Rename FFmpeg directory
         run: |
           $ffmpeg_dir = Get-ChildItem -Path . -Directory -Filter "ffmpeg-*-essentials_build" | Select-Object -First 1
@@ -39,7 +39,7 @@ jobs:
             exit 1
           }
           
-      # 6. (MODIFICADO) Ejecuta PyInstaller usando la ruta predecible
+      # 6. Ejecuta PyInstaller usando la ruta predecible
       - name: Build Executable with PyInstaller
         run: |
           pyinstaller --onefile --name video_checker `
